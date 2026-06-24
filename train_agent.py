@@ -1,26 +1,43 @@
+import gymnasium as gym
 from stable_baselines3 import PPO
-from ur3_env import UR3ObstacleEnv
+from stable_baselines3.common.callbacks import CheckpointCallback
 
-# 1. Initialize your custom ROS 2 / Gazebo environment
-print("Connecting to Gazebo...")
-env = UR3ObstacleEnv()
+# CRITICAL FIX: Importing your exact class name
+from ur3_env import UR3ObstacleEnv 
 
-# 2. Build the PPO Neural Network (Using a Multi-Layer Perceptron policy)
-# We also enable TensorBoard so you can track the learning curve live
-print("Initializing PPO Agent...")
-model = PPO(
-    "MlpPolicy", 
-    env, 
-    verbose=1, 
-    tensorboard_log="./ur3_tensorboard/"
-)
+def main():
+    # 1. Initialize the Environment
+    print("Connecting to Gazebo UR3 Environment...")
+    env = UR3ObstacleEnv()
 
-# 3. Train the Agent
-# 100,000 steps is a good quick test to ensure the math doesn't crash. 
-# For your actual thesis, this will likely be 1,000,000 to 5,000,000 steps.
-print("Starting Training Loop...")
-model.learn(total_timesteps=100000)
+    # 2. Build the PPO Agent (The "Brain")
+    print("Initializing PPO Model...")
+    model = PPO(
+        policy="MlpPolicy",
+        env=env,
+        verbose=1,
+        tensorboard_log="./ur3_tensorboard/"
+    )
 
-# 4. Save the trained brain to your hard drive
-model.save("ppo_ur3_obstacle_avoidance")
-print("Training Finished and Model Saved!")
+    # 3. Setup the Auto-Save Checkpoint
+    # This saves a backup of the brain every 10,000 steps so you never lose lab progress
+    checkpoint_callback = CheckpointCallback(
+        save_freq=10000,
+        save_path='./models/checkpoints/',
+        name_prefix='ur3_ppo_checkpoint'
+    )
+
+    # 4. Start the Training Loop
+    print("Starting Training (Target: 500,000 steps)...")
+    model.learn(
+        total_timesteps=500000, 
+        callback=checkpoint_callback,
+        reset_num_timesteps=False 
+    )
+
+    # 5. Final Save (If it completes all 500k steps)
+    print("Training Complete! Saving final model...")
+    model.save("ur3_ppo_final")
+
+if __name__ == '__main__':
+    main()

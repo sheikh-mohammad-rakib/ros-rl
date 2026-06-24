@@ -31,16 +31,21 @@ class UR3ObstacleEnv(gym.Env):
         self.executor_thread = threading.Thread(target=rclpy.spin, args=(self.ros_node,), daemon=True)
         self.executor_thread.start()
 
-        # FIXED: Action space is now normalized [-1, 1]. This is highly recommended for PPO.
+        # Action space normalized [-1, 1]. Highly recommended for PPO.
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(6,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.pi, high=np.pi, shape=(6,), dtype=np.float32)
         
         # Max radians the arm is allowed to move per 0.1s step
         self.max_joint_step = 0.05 
         
+        # Scenario coordinates matching the Gazebo spheres
         self.target_position = np.array([0.3, -0.2, 0.1]) 
         self.obstacle_center = np.array([0.2, 0.0, 0.2])
         self.obstacle_radius = 0.12 
+        
+        # Episode Constraints
+        self.max_steps = 300
+        self.current_step = 0
 
     def get_all_joint_positions(self, joint_angles):
         dh_params = [
@@ -68,11 +73,11 @@ class UR3ObstacleEnv(gym.Env):
         return positions
 
     def step(self, action):
+        self.current_step += 1
         current_angles = self.ros_node.current_joint_angles
         
-        # FIXED: Calculate new target angles relative to current position
+        # Calculate new target angles relative to current position
         target_angles = current_angles + (action * self.max_joint_step)
-        # Ensure we don't accidentally ask it to break its own joints (-pi to pi limit)
         target_angles = np.clip(target_angles, -np.pi, np.pi)
 
         # Send the action to Gazebo
@@ -85,8 +90,8 @@ class UR3ObstacleEnv(gym.Env):
         msg.points = [point]
         self.ros_node.publisher.publish(msg)
         
-        # Wait for physics simulation
-        time.sleep(0.05) 
+        # Wait EXACTLY the duration of the movement (0.1s)
+        time.sleep(0.1) 
         obs = self.ros_node.current_joint_angles
         
         # Physics / Reward Math
@@ -117,8 +122,29 @@ class UR3ObstacleEnv(gym.Env):
             reward = -distance_to_goal + (0.1 * safety_margin)
             terminated = False
 
-        return obs.astype(np.float32), float(reward), terminated, False, {}
+        truncated = self.current_step >= self.max_steps
+
+        return obs.astype(np.float32), float(reward), terminated, truncated, {}
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        self.current_step = 0
+        
+        # Send the robot back to a safe "Home" position to escape collision death loops
+        home_angles = np.array([0.0, -1.57, 0.0, -1.57, 0.0, 0.0])
+        
+        msg = JointTrajectory()
+        msg.joint_names = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
+        point = JointTrajectoryPoint()
+        point.positions = home_angles.tolist()
+        
+        # FIXED: Give the robot 3 full seconds to slowly move home without triggering Gazebo errors
+        point.time_from_start.sec = 3  
+        point.time_from_start.nanosec = 0
+        msg.points = [point]
+        self.ros_node.publisher.publish(msg)
+        
+        # FIXED: Wait 3.5 seconds to ensure the physical arm has reached home before the episode begins
+        time.sleep(3.5)
+        
         return self.ros_node.current_joint_angles.astype(np.float32), {}
